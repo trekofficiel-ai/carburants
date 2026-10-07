@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Carbz</title>
 <!-- Nom, icône et couleurs quand l'app est ajoutée à l'écran d'accueil -->
 <link rel="manifest" href="manifest.webmanifest">
@@ -31,7 +31,9 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-         color: var(--texte); background: var(--fond); display: flex; }
+         color: var(--texte); background: var(--fond); display: flex;
+         /* laisse la place à l'heure, à l'encoche et à la barre d'accueil de l'iPhone */
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
   #panneau { width: 340px; flex: none; overflow-y: auto; padding: 16px;
              border-right: 1px solid var(--trait); }
   #carte { flex: 1; min-height: 0; }
@@ -99,7 +101,8 @@
   @media (max-width: 700px) {
     body { flex-direction: column-reverse; }
     #panneau { width: auto; max-height: 46vh; border-right: 0;
-               border-top: 1px solid var(--trait); }
+               border-top: 1px solid var(--trait);
+               padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   }
 </style>
 </head>
@@ -209,6 +212,15 @@ function ageEnJours(texte) {
 // --------------------------------------------------------------------------
 function obtenirPosition() {
   return new Promise(resolve => {
+    // Dans l'app des stores : GPS natif du téléphone (une seule demande d'autorisation)
+    const natif = window.Capacitor?.isNativePlatform?.() && window.Capacitor.Plugins?.Geolocation;
+    if (natif) {
+      natif.getCurrentPosition({timeout: 10000, maximumAge: 5 * 60000})
+        .then(p => resolve({nom: "votre position", lat: p.coords.latitude, lon: p.coords.longitude}))
+        .catch(() => resolve(DEFAUT));
+      return;
+    }
+    // Sur le site web : géolocalisation du navigateur
     if (!navigator.geolocation) return resolve(DEFAUT);
     navigator.geolocation.getCurrentPosition(
       p => resolve({nom: "votre position", lat: p.coords.latitude, lon: p.coords.longitude}),
