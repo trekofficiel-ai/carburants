@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Fond plein : iOS et Android arrondissent eux-mêmes les coins -->
+  <rect width="512" height="512" fill="#12733a"/>
+  <!-- Pompe, centrée dans la zone sûre (les 80 % du milieu) -->
+  <g fill="#fff">
+    <rect x="148" y="128" width="150" height="248" rx="22"/>
+    <rect x="128" y="364" width="190" height="34" rx="10"/>
+  </g>
+  <rect x="172" y="156" width="102" height="72" rx="10" fill="#12733a"/>
+  <path d="M298 206 H326 Q348 206 348 228 V316 Q348 342 372 342 Q396 342 396 316 V196 L362 158"
+        fill="none" stroke="#fff" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
