@@ -3,15 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Carburants les moins chers</title>
+<title>Carbz</title>
+<!-- Nom, icône et couleurs quand l'app est ajoutée à l'écran d'accueil -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icone.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icone-180.png">
+<meta name="apple-mobile-web-app-title" content="Carbz">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#12733a">
 <!--
-  Carte des carburants les moins chers autour de vous.
+  Carbz : carte des carburants les moins chers autour de vous.
 
   Page autonome : à chaque ouverture, le navigateur demande la position,
   puis télécharge directement les prix officiels (flux « Prix des carburants
   en France », mis à jour toutes les 10 minutes). Aucun serveur nécessaire.
 -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="leaflet.css">
 <style>
   :root { --fond:#ffffff; --texte:#1b1f24; --doux:#5c6570; --trait:#e3e6ea;
           --vert:#12733a; --orange:#a85b00; --rouge:#b3261e; --gris:#7a828c;
@@ -35,13 +43,31 @@
                border: 1px solid var(--trait); background: none; color: var(--accent);
                cursor: pointer; white-space: nowrap; }
   #localiser:disabled { opacity: .5; cursor: wait; }
+  #rayons { display: flex; align-items: center; gap: 6px; margin: -4px 0 12px;
+            font-size: 13px; color: var(--doux); }
+  #rayons button { font: inherit; padding: 3px 9px; border-radius: 999px;
+                   border: 1px solid var(--trait); background: none;
+                   color: var(--texte); cursor: pointer; }
+  #rayons button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent);
+                   font-weight: 600; }
   #choix { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
   #choix button { font: inherit; padding: 6px 11px; border-radius: 999px;
                   border: 1px solid var(--trait); background: none;
                   color: var(--texte); cursor: pointer; }
   #choix button[aria-pressed="true"] { background: var(--accent);
                   border-color: var(--accent); color: var(--fond); font-weight: 600; }
-  #bilan { border: 1px solid var(--trait); border-radius: 10px; padding: 12px;
+  h2 { font-size: 14px; margin: 0 0 4px; }
+  #favoris { margin-bottom: 14px; }
+  .alerte { background: color-mix(in srgb, var(--orange) 14%, transparent);
+            border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-bottom: 12px; }
+  .alerte button { font: inherit; margin-left: 6px; padding: 2px 8px; border-radius: 6px;
+                   border: 1px solid currentColor; background: none; color: inherit;
+                   cursor: pointer; }
+  .etoile { color: #d18f00; }
+  .fav { font: inherit; font-size: 13px; margin-top: 8px; padding: 4px 10px;
+         border-radius: 8px; border: 1px solid #c9ced4; background: #fff;
+         color: #1b1f24; cursor: pointer; }
+  #bilan { 1px solid var(--trait); border-radius: 10px; padding: 12px;
            margin-bottom: 14px; }
   #bilan b { font-size: 22px; font-variant-numeric: tabular-nums; }
   #bilan p { margin: 4px 0 0; color: var(--doux); font-size: 13px; }
@@ -81,25 +107,32 @@
 <aside id="panneau">
   <div class="entete">
     <div>
-      <h1>Carburants les moins chers</h1>
+      <h1>Carbz</h1>
       <p class="sous" id="sous">Recherche de votre position…</p>
     </div>
     <button id="localiser" type="button">Me localiser</button>
   </div>
+  <div id="rayons" role="group" aria-label="Rayon de recherche">Rayon</div>
   <div id="choix" role="group" aria-label="Carburant"></div>
+  <p class="alerte" id="alerte" hidden></p>
+  <section id="favoris" hidden>
+    <h2><span class="etoile">★</span> Mes stations</h2>
+    <ol id="listeFavoris"></ol>
+  </section>
   <div id="bilan"><p>Chargement…</p></div>
+  <h2 id="titreTop" hidden>Les 10 moins chères</h2>
   <ol id="liste"></ol>
   <footer id="pied"></footer>
 </aside>
 <div id="carte"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="leaflet.js"></script>
 <script>
 // --------------------------------------------------------------------------
 // RÉGLAGES
 // --------------------------------------------------------------------------
 const DEFAUT = {nom: "Salon-de-Provence", lat: 43.6405, lon: 5.0970};
-const RAYON_KM = 15;
+const RAYONS_KM = [5, 10, 15, 25];  // choix proposés ; 15 km par défaut
 const LITRES_PLEIN = 50;     // sert à chiffrer l'économie sur un plein
 const AGE_MAX_JOURS = 3;     // au-delà, un prix est considéré comme périmé
 
@@ -108,8 +141,31 @@ const API = "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/" +
 const NOMS = {gazole: "Gazole", e10: "SP95-E10", sp98: "SP98",
               sp95: "SP95", e85: "E85", gplc: "GPLc"};
 
+// --------------------------------------------------------------------------
+// MÉMOIRE DU TÉLÉPHONE : réglages gardés d'une ouverture à l'autre
+// (try/catch : certains navigateurs, en navigation privée, refusent l'accès.)
+// --------------------------------------------------------------------------
+function lireReglage(cle, defaut) {
+  try {
+    const valeur = localStorage.getItem("carbz." + cle);
+    return valeur === null ? defaut : JSON.parse(valeur);
+  } catch (e) { return defaut; }
+}
+function ecrireReglage(cle, valeur) {
+  try { localStorage.setItem("carbz." + cle, JSON.stringify(valeur)); } catch (e) {}
+}
+
+let rayon = lireReglage("rayon", 15);
+if (!RAYONS_KM.includes(rayon)) rayon = 15;
+let carburantChoisi = lireReglage("carburant", null);
+let favoris = lireReglage("favoris", []);   // [{id, adresse, ville}]
+
 let stations = [];           // stations du rayon, une fois nettoyées
-let carburantChoisi = null;  // gardé quand on se relocalise
+let horsZone = [];           // favoris situés hors du rayon
+let classees = [];           // stations du rayon classées pour le carburant choisi
+let marqueurs = new Map();   // identifiant de station -> étiquette sur la carte
+let centre = null;           // position utilisée pour la recherche
+let chargement = 0;          // numéro du dernier chargement lancé
 
 // --------------------------------------------------------------------------
 // PETITS OUTILS
@@ -122,10 +178,16 @@ const echappe = t => String(t).replace(/[&<>"']/g,
 // « 17 ROUTE NATIONALE » -> « 17 Route Nationale »
 const majuscules = t => String(t || "").trim().toLowerCase()
   .replace(/(^|[^\p{L}])(\p{L})/gu, (m, avant, lettre) => avant + lettre.toUpperCase());
-const frais = p => p.age === null || p.age <= AGE_MAX_JOURS;
-const quand = p => p.age === null ? "date inconnue"
-  : p.age < 1 ? "mis à jour aujourd'hui"
-  : "mis à jour il y a " + Math.round(p.age) + " j";
+const dateCourte = d => d.toLocaleString("fr-FR", {dateStyle: "short", timeStyle: "short"})
+  .replace(" ", " à ");
+
+// L'âge d'un prix est recalculé à chaque affichage (utile pour les prix gardés hors ligne)
+const age = p => ageEnJours(p.maj);
+const frais = p => age(p) === null || age(p) <= AGE_MAX_JOURS;
+const quand = p => age(p) === null ? "date inconnue"
+  : age(p) < 1 ? "mis à jour aujourd'hui"
+  : "mis à jour il y a " + Math.round(age(p)) + " j";
+const estFavori = id => favoris.some(f => f.id === id);
 
 // Distance à vol d'oiseau (formule de haversine), en km
 function distanceKm(a, b) {
@@ -156,11 +218,11 @@ function obtenirPosition() {
 }
 
 // --------------------------------------------------------------------------
-// DONNÉES : on demande à l'API uniquement les stations du rayon
+// DONNÉES
 // --------------------------------------------------------------------------
-async function telecharger(centre) {
-  // L'API renvoie 100 stations maximum par appel : on avance par paquets.
-  const filtre = `within_distance(geom, geom'POINT(${centre.lon} ${centre.lat})', ${RAYON_KM}km)`;
+// Interroge l'API avec un filtre. Elle renvoie 100 stations maximum par appel :
+// on avance donc par paquets.
+async function interroger(filtre) {
   const brutes = [];
   for (let offset = 0; ; offset += 100) {
     const url = API + "?" + new URLSearchParams({where: filtre, limit: 100, offset});
@@ -173,6 +235,16 @@ async function telecharger(centre) {
   }
 }
 
+// Les stations du rayon
+const telechargerZone = c =>
+  interroger(`within_distance(geom, geom'POINT(${c.lon} ${c.lat})', ${rayon}km)`);
+
+// Des stations précises, par identifiant (pour les favoris hors du rayon)
+function telechargerStations(ids) {
+  ids = ids.map(Number).filter(Number.isFinite);
+  return ids.length ? interroger(`id in (${ids.join(",")})`) : Promise.resolve([]);
+}
+
 function coordonnees(brut) {
   const g = brut.geom || {};
   if (g.lat != null && g.lon != null) return {lat: +g.lat, lon: +g.lon};
@@ -181,28 +253,34 @@ function coordonnees(brut) {
   return isFinite(lat) && isFinite(lon) ? {lat, lon} : null;
 }
 
-// Transforme une station brute en objet simple pour la carte
-function nettoyer(brut, centre) {
+// Transforme une station brute en objet simple pour la carte.
+// dansRayon = false : on garde la station même si elle est loin (favoris).
+function nettoyer(brut, depuis, dansRayon = true) {
   const pos = coordonnees(brut);
   if (!pos) return null;
-  const distance = distanceKm(centre, pos);
-  if (distance > RAYON_KM) return null;
+  const distance = distanceKm(depuis, pos);
+  if (dansRayon && distance > rayon) return null;
 
   const prix = {};
   for (const c of Object.keys(NOMS)) {
     const valeur = parseFloat(brut[c + "_prix"]);
     if (!(valeur > 0.3 && valeur < 5)) continue;  // absent ou aberrant
-    prix[c] = {prix: Math.round(valeur * 1000) / 1000, age: ageEnJours(brut[c + "_maj"])};
+    prix[c] = {prix: Math.round(valeur * 1000) / 1000, maj: brut[c + "_maj"] || null};
   }
   if (!Object.keys(prix).length) return null;
 
   return {
+    id: Number(brut.id),
     adresse: majuscules(brut.adresse), ville: majuscules(brut.ville), cp: brut.cp || "",
     lat: pos.lat, lon: pos.lon, km: distance,
     auto24: String(brut.horaires_automate_24_24 || "").toLowerCase() === "oui",
     prix,
   };
 }
+
+// Derniers prix chargés, gardés pour pouvoir les réafficher sans réseau
+const sauverCache = () =>
+  ecrireReglage("cache", {date: Date.now(), centre, rayon, stations, horsZone});
 
 // --------------------------------------------------------------------------
 // CARTE
@@ -217,40 +295,60 @@ L.tileLayer("https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0
 const calque = L.layerGroup().addTo(carte);
 let zone = null, pointCentre = null;
 
-function placerCentre(centre) {
+function placerCentre(c) {
   if (zone) zone.remove();
   if (pointCentre) pointCentre.remove();
-  zone = L.circle([centre.lat, centre.lon], {radius: RAYON_KM * 1000, color: "#0b57d0",
+  zone = L.circle([c.lat, c.lon], {radius: rayon * 1000, color: "#0b57d0",
     weight: 1, fill: false, dashArray: "4 6", interactive: false}).addTo(carte);
-  pointCentre = L.circleMarker([centre.lat, centre.lon], {radius: 6, color: "#fff",
-    weight: 2, fillColor: "#0b57d0", fillOpacity: 1}).bindPopup(centre.nom).addTo(carte);
+  pointCentre = L.circleMarker([c.lat, c.lon], {radius: 6, color: "#fff",
+    weight: 2, fillColor: "#0b57d0", fillOpacity: 1}).bindPopup(c.nom).addTo(carte);
   carte.invalidateSize();             // remesure la carte (taille parfois 0 au démarrage)
   carte.fitBounds(zone.getBounds());  // cadre la carte sur le rayon
 }
 
-function infobulle(s, choisi) {
+const texteFavori = id => estFavori(id) ? "★ Retirer des favoris" : "☆ Ajouter aux favoris";
+
+function infobulle(s) {
   const lignes = Object.keys(NOMS).filter(c => s.prix[c]).map(c =>
-    `<tr><td>${c === choisi ? "<b>" + NOMS[c] + "</b>" : NOMS[c]}</td>` +
+    `<tr><td>${c === carburantChoisi ? "<b>" + NOMS[c] + "</b>" : NOMS[c]}</td>` +
     `<td class="n">${euro(s.prix[c].prix)}</td>` +
     `<td><small>${quand(s.prix[c])}</small></td></tr>`).join("");
   return `<b>${echappe(s.adresse)}</b><br>${echappe(s.cp)} ${echappe(s.ville)}` +
     `<table>${lignes}</table>` +
     `<small>${km(s.km)}${s.auto24 ? " · automate 24h/24" : ""}</small><br>` +
     `<a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1` +
-    `&destination=${s.lat},${s.lon}">Itinéraire</a>`;
+    `&destination=${s.lat},${s.lon}">Itinéraire</a><br>` +
+    `<button type="button" class="fav" data-id="${s.id}">${texteFavori(s.id)}</button>`;
 }
 
+// Centre la carte sur une station et ouvre sa bulle
+function voir(s) {
+  const m = marqueurs.get(s.id);
+  if (m) {
+    carte.setView([s.lat, s.lon], 15);
+    m.openPopup();
+  } else {  // favori hors du rayon : pas d'étiquette, juste une bulle
+    carte.setView([s.lat, s.lon], 14);
+    L.popup().setLatLng([s.lat, s.lon]).setContent(infobulle(s)).openOn(carte);
+  }
+}
+
+// --------------------------------------------------------------------------
+// AFFICHAGE
+// --------------------------------------------------------------------------
+// Dessine les étiquettes de prix du carburant choisi, puis les listes
 function afficher(c) {
   carburantChoisi = c;
+  ecrireReglage("carburant", c);
   calque.clearLayers();
+  marqueurs = new Map();
   document.querySelectorAll("#choix button").forEach(b =>
     b.setAttribute("aria-pressed", b.dataset.c === c));
 
   const toutes = stations.filter(s => s.prix[c]);
-  const classees = toutes.filter(s => frais(s.prix[c]))
-                         .sort((a, b) => a.prix[c].prix - b.prix[c].prix);
+  classees = toutes.filter(s => frais(s.prix[c]))
+                   .sort((a, b) => a.prix[c].prix - b.prix[c].prix);
   const rang = new Map(classees.map((s, i) => [s, i]));
-  const marqueurs = new Map();
 
   toutes.forEach(s => {
     const i = rang.get(s);
@@ -261,12 +359,49 @@ function afficher(c) {
       icon: L.divIcon({className: "", iconSize: [0, 0],
         html: `<span class="etiquette ${couleur}">${euro(s.prix[c].prix)}</span>`}),
       zIndexOffset: i === undefined ? -1000 : 1000 - i,
-    }).bindPopup(infobulle(s, c)).addTo(calque);
-    marqueurs.set(s, m);
+    }).bindPopup(() => infobulle(s)).addTo(calque);  // bulle recalculée à l'ouverture
+    marqueurs.set(s.id, m);
+  });
+
+  afficherListes();
+}
+
+function ligne(s, prix, classe, details) {
+  const li = document.createElement("li");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.innerHTML = `<span class="p ${classe}">${prix}</span>` +
+    `<span>${estFavori(s.id) ? '<span class="etoile">★</span> ' : ""}${echappe(s.adresse)}</span>` +
+    `<span class="d">${details}</span>`;
+  return [li, b];
+}
+
+// « Mes stations », le résumé et le top 10
+function afficherListes() {
+  const c = carburantChoisi;
+
+  const listeFavoris = $("listeFavoris");
+  listeFavoris.innerHTML = "";
+  $("favoris").hidden = !favoris.length;
+  const parId = new Map([...stations, ...horsZone].map(s => [s.id, s]));
+  favoris.forEach(f => {
+    const s = parId.get(f.id);
+    const p = s && s.prix[c];
+    const details = [echappe(f.ville)];
+    if (s) details.push(km(s.km));
+    if (!s) details.push("prix indisponible");
+    else if (!p) details.push("pas de " + NOMS[c]);
+    else if (!frais(p)) details.push("prix ancien");
+    const [li, b] = ligne(s || f, p ? euro(p.prix) : "—", p && frais(p) ? "" : "gris",
+                          details.join(" · "));
+    if (s) b.onclick = () => voir(s); else b.disabled = true;
+    li.appendChild(b);
+    listeFavoris.appendChild(li);
   });
 
   const liste = $("liste");
   liste.innerHTML = "";
+  $("titreTop").hidden = !classees.length;
   if (!classees.length) {
     $("bilan").innerHTML = `<p>Aucun prix récent pour ${NOMS[c]} dans ce rayon.</p>`;
     return;
@@ -279,51 +414,43 @@ function afficher(c) {
     `chère et la plus chère (${classees.length} stations comparées).</p>`;
 
   classees.slice(0, 10).forEach(s => {
-    const li = document.createElement("li");
-    const b = document.createElement("button");
-    b.innerHTML = `<span class="p vert">${euro(s.prix[c].prix)}</span>` +
-      `<span>${echappe(s.adresse)}</span>` +
-      `<span class="d">${echappe(s.ville)} · ${km(s.km)}</span>`;
-    b.onclick = () => { carte.setView([s.lat, s.lon], 15); marqueurs.get(s).openPopup(); };
+    const [li, b] = ligne(s, euro(s.prix[c].prix), "vert",
+                          `${echappe(s.ville)} · ${km(s.km)}`);
+    b.onclick = () => voir(s);
     li.appendChild(b);
     liste.appendChild(li);
   });
 }
 
-// --------------------------------------------------------------------------
-// DÉMARRAGE : position -> téléchargement -> affichage
-// --------------------------------------------------------------------------
-async function demarrer() {
-  const bouton = $("localiser");
-  bouton.disabled = true;
-  $("sous").textContent = "Recherche de votre position…";
-  $("bilan").innerHTML = "<p>Chargement…</p>";
-  $("liste").innerHTML = "";
-  $("choix").innerHTML = "";
-  calque.clearLayers();
-
-  const centre = await obtenirPosition();
-  placerCentre(centre);
-  $("sous").textContent = `${RAYON_KM} km autour de ${centre.nom} · chargement des prix…`;
-
-  try {
-    const brutes = await telecharger(centre);
-    stations = brutes.map(b => nettoyer(b, centre)).filter(Boolean);
-  } catch (erreur) {
-    $("sous").textContent = `${RAYON_KM} km autour de ${centre.nom}`;
-    $("bilan").innerHTML = "<p>Impossible de charger les prix. Vérifiez la connexion " +
-      "Internet, puis réessayez.</p><button type='button'>Réessayer</button>";
-    $("bilan").querySelector("button").onclick = demarrer;
-    bouton.disabled = false;
-    return;
+// Ajoute ou retire une station des favoris
+function basculerFavori(id) {
+  if (estFavori(id)) {
+    favoris = favoris.filter(f => f.id !== id);
+  } else {
+    const s = [...stations, ...horsZone].find(x => x.id === id);
+    if (s) favoris.push({id, adresse: s.adresse, ville: s.ville});
   }
+  ecrireReglage("favoris", favoris);
+  afficherListes();
+}
 
-  $("sous").textContent = `${RAYON_KM} km autour de ${centre.nom} · ${stations.length} stations`;
-  const heure = new Date().toLocaleString("fr-FR", {dateStyle: "short", timeStyle: "short"});
+// Bouton « favori » dans les bulles (elles sont créées à la volée)
+document.addEventListener("click", e => {
+  const b = e.target.closest(".fav");
+  if (!b) return;
+  const id = Number(b.dataset.id);
+  basculerFavori(id);
+  b.textContent = texteFavori(id);
+});
+
+// Remplit la page avec les stations en mémoire (fraîches ou gardées hors ligne)
+function afficherDonnees(date) {
+  $("sous").textContent = `${rayon} km autour de ${centre.nom} · ${stations.length} stations`;
   $("pied").textContent = `Données officielles (prix-carburants.gouv.fr) chargées le ` +
-    `${heure.replace(" ", " à ")}. En gris sur la carte : prix de plus de ` +
+    `${dateCourte(date)}. En gris sur la carte : prix de plus de ` +
     `${AGE_MAX_JOURS} jours, exclus du classement.`;
 
+  $("choix").innerHTML = "";
   const disponibles = Object.keys(NOMS).filter(c => stations.some(s => s.prix[c]));
   disponibles.forEach(c => {
     const b = document.createElement("button");
@@ -337,12 +464,101 @@ async function demarrer() {
     afficher(disponibles.includes(carburantChoisi) ? carburantChoisi : disponibles[0]);
   } else {
     $("bilan").innerHTML = "<p>Aucune station trouvée dans ce rayon.</p>";
+    afficherListes();
   }
-  bouton.disabled = false;
 }
 
-$("localiser").onclick = demarrer;
-demarrer();
+// --------------------------------------------------------------------------
+// DÉMARRAGE : position -> téléchargement -> affichage
+// --------------------------------------------------------------------------
+// Cherche la position, puis charge les prix autour.
+async function localiser() {
+  $("localiser").disabled = true;
+  $("sous").textContent = "Recherche de votre position…";
+  centre = await obtenirPosition();
+  $("localiser").disabled = false;
+  charger();
+}
+
+// Charge les prix autour de « centre », dans le rayon choisi.
+async function charger() {
+  // Si un autre chargement démarre entre-temps (changement de rayon rapide),
+  // celui-ci s'arrête : seul le plus récent s'affiche.
+  const numero = ++chargement;
+  $("alerte").hidden = true;
+  $("bilan").innerHTML = "<p>Chargement…</p>";
+  $("liste").innerHTML = "";
+  $("titreTop").hidden = true;
+  $("choix").innerHTML = "";
+  calque.clearLayers();
+  placerCentre(centre);
+  $("sous").textContent = `${rayon} km autour de ${centre.nom} · chargement des prix…`;
+
+  let zoneBrute, favorisBruts;
+  try {
+    zoneBrute = await telechargerZone(centre);
+    const ids = new Set(zoneBrute.map(b => Number(b.id)));
+    favorisBruts = await telechargerStations(favoris.map(f => f.id).filter(id => !ids.has(id)));
+  } catch (erreur) {
+    if (numero === chargement) horsLigne();
+    return;
+  }
+  if (numero !== chargement) return;
+  stations = zoneBrute.map(b => nettoyer(b, centre)).filter(Boolean);
+  const dansZone = new Set(stations.map(s => s.id));
+  horsZone = [...zoneBrute, ...favorisBruts]
+    .filter(b => favoris.some(f => f.id === Number(b.id)) && !dansZone.has(Number(b.id)))
+    .map(b => nettoyer(b, centre, false)).filter(Boolean);
+  sauverCache();
+  afficherDonnees(new Date());
+}
+
+// Pas de réseau : on réaffiche les derniers prix gardés, s'il y en a
+function horsLigne() {
+  const cache = lireReglage("cache", null);
+  if (!cache) {
+    $("sous").textContent = `${rayon} km autour de ${centre.nom}`;
+    $("bilan").innerHTML = "<p>Impossible de charger les prix. Vérifiez la connexion " +
+      "Internet, puis réessayez.</p><button type='button'>Réessayer</button>";
+    $("bilan").querySelector("button").onclick = charger;
+    return;
+  }
+  ({centre, rayon, stations, horsZone} = cache);
+  majBoutonsRayon();
+  placerCentre(centre);
+  afficherDonnees(new Date(cache.date));
+  $("alerte").innerHTML = `Pas de connexion : prix enregistrés le ${dateCourte(new Date(cache.date))}.` +
+    "<button type='button'>Réessayer</button>";
+  $("alerte").querySelector("button").onclick = localiser;
+  $("alerte").hidden = false;
+}
+
+// Boutons de rayon : on recharge autour de la même position
+const majBoutonsRayon = () => document.querySelectorAll("#rayons button").forEach(b =>
+  b.setAttribute("aria-pressed", Number(b.dataset.r) === rayon));
+RAYONS_KM.forEach(r => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = r + " km";
+  b.dataset.r = r;
+  b.onclick = () => {
+    rayon = r;
+    ecrireReglage("rayon", r);
+    majBoutonsRayon();
+    if (centre) charger();
+  };
+  $("rayons").appendChild(b);
+});
+majBoutonsRayon();
+
+$("localiser").onclick = localiser;
+localiser();
+
+// Sur le site web, garde une copie de l'app pour qu'elle s'ouvre sans réseau.
+// (Inutile dans l'app des stores, qui contient déjà tous ses fichiers.)
+if ("serviceWorker" in navigator && location.protocol === "https:" && !window.Capacitor) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
 </script>
 </body>
 </html>
