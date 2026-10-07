@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carburants les moins chers</title>
+<!--
+  Carte des carburants les moins chers autour de vous.
+
+  Page autonome : à chaque ouverture, le navigateur demande la position,
+  puis télécharge directement les prix officiels (flux « Prix des carburants
+  en France », mis à jour toutes les 10 minutes). Aucun serveur nécessaire.
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --fond:#ffffff; --texte:#1b1f24; --doux:#5c6570; --trait:#e3e6ea;
+          --vert:#12733a; --orange:#a85b00; --rouge:#b3261e; --gris:#7a828c;
+          --accent:#0b57d0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fond:#16191d; --texte:#eceff2; --doux:#a3abb5; --trait:#2c3138;
+            --accent:#8ab4f8; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: var(--texte); background: var(--fond); display: flex; }
+  #panneau { width: 340px; flex: none; overflow-y: auto; padding: 16px;
+             border-right: 1px solid var(--trait); }
+  #carte { flex: 1; min-height: 0; }
+  .entete { display: flex; align-items: flex-start; gap: 10px; }
+  .entete div { flex: 1; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sous { color: var(--doux); font-size: 13px; margin: 0 0 14px; }
+  #localiser { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px;
+               border: 1px solid var(--trait); background: none; color: var(--accent);
+               cursor: pointer; white-space: nowrap; }
+  #localiser:disabled { opacity: .5; cursor: wait; }
+  #choix { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  #choix button { font: inherit; padding: 6px 11px; border-radius: 999px;
+                  border: 1px solid var(--trait); background: none;
+                  color: var(--texte); cursor: pointer; }
+  #choix button[aria-pressed="true"] { background: var(--accent);
+                  border-color: var(--accent); color: var(--fond); font-weight: 600; }
+  #bilan { border: 1px solid var(--trait); border-radius: 10px; padding: 12px;
+           margin-bottom: 14px; }
+  #bilan b { font-size: 22px; font-variant-numeric: tabular-nums; }
+  #bilan p { margin: 4px 0 0; color: var(--doux); font-size: 13px; }
+  #bilan button { font: inherit; margin-top: 8px; padding: 6px 12px; border-radius: 8px;
+                  border: 0; background: var(--accent); color: var(--fond); cursor: pointer; }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li button { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px;
+              width: 100%; text-align: left; font: inherit; color: inherit;
+              background: none; border: 0; border-top: 1px solid var(--trait);
+              padding: 10px 2px; cursor: pointer; }
+  li button:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  li .p { grid-row: span 2; font-size: 17px; font-weight: 700;
+          font-variant-numeric: tabular-nums; align-self: center; }
+  li .d { color: var(--doux); font-size: 13px; }
+  .vert { color: var(--vert); } .orange { color: var(--orange); }
+  .rouge { color: var(--rouge); } .gris { color: var(--gris); }
+  .etiquette { background: #fff; border: 2px solid currentColor; border-radius: 8px;
+               padding: 1px 6px; font: 700 12px system-ui, sans-serif;
+               font-variant-numeric: tabular-nums; white-space: nowrap;
+               box-shadow: 0 1px 4px rgba(0,0,0,.3); transform: translate(-50%, -50%);
+               display: inline-block; }
+  .etiquette.gris { font-weight: 500; opacity: .75; }
+  .leaflet-popup-content { font: 14px/1.45 system-ui, sans-serif; margin: 12px 14px; }
+  .leaflet-popup-content table { border-collapse: collapse; margin: 6px 0; }
+  .leaflet-popup-content td { padding: 1px 10px 1px 0; }
+  .leaflet-popup-content td.n { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .leaflet-popup-content small { color: #5c6570; }
+  footer { color: var(--doux); font-size: 12px; margin-top: 16px; }
+  @media (max-width: 700px) {
+    body { flex-direction: column-reverse; }
+    #panneau { width: auto; max-height: 46vh; border-right: 0;
+               border-top: 1px solid var(--trait); }
+  }
+</style>
+</head>
+<body>
+<aside id="panneau">
+  <div class="entete">
+    <div>
+      <h1>Carburants les moins chers</h1>
+      <p class="sous" id="sous">Recherche de votre position…</p>
+    </div>
+    <button id="localiser" type="button">Me localiser</button>
+  </div>
+  <div id="choix" role="group" aria-label="Carburant"></div>
+  <div id="bilan"><p>Chargement…</p></div>
+  <ol id="liste"></ol>
+  <footer id="pied"></footer>
+</aside>
+<div id="carte"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// --------------------------------------------------------------------------
+// RÉGLAGES
+// --------------------------------------------------------------------------
+const DEFAUT = {nom: "Salon-de-Provence", lat: 43.6405, lon: 5.0970};
+const RAYON_KM = 15;
+const LITRES_PLEIN = 50;     // sert à chiffrer l'économie sur un plein
+const AGE_MAX_JOURS = 3;     // au-delà, un prix est considéré comme périmé
+
+const API = "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/" +
+            "prix-des-carburants-en-france-flux-instantane-v2/records";
+const NOMS = {gazole: "Gazole", e10: "SP95-E10", sp98: "SP98",
+              sp95: "SP95", e85: "E85", gplc: "GPLc"};
+
+let stations = [];           // stations du rayon, une fois nettoyées
+let carburantChoisi = null;  // gardé quand on se relocalise
+
+// --------------------------------------------------------------------------
+// PETITS OUTILS
+// --------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const euro = n => n.toFixed(3).replace(".", ",") + " €";
+const km = n => n.toFixed(1).replace(".", ",") + " km";
+const echappe = t => String(t).replace(/[&<>"']/g,
+  c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+// « 17 ROUTE NATIONALE » -> « 17 Route Nationale »
+const majuscules = t => String(t || "").trim().toLowerCase()
+  .replace(/(^|[^\p{L}])(\p{L})/gu, (m, avant, lettre) => avant + lettre.toUpperCase());
+const frais = p => p.age === null || p.age <= AGE_MAX_JOURS;
+const quand = p => p.age === null ? "date inconnue"
+  : p.age < 1 ? "mis à jour aujourd'hui"
+  : "mis à jour il y a " + Math.round(p.age) + " j";
+
+// Distance à vol d'oiseau (formule de haversine), en km
+function distanceKm(a, b) {
+  const rad = x => x * Math.PI / 180;
+  const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2 +
+    Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(h));
+}
+
+// Nombre de jours écoulés depuis la dernière mise à jour du prix
+function ageEnJours(texte) {
+  const date = Date.parse(String(texte).replace(" ", "T"));
+  if (isNaN(date)) return null;
+  return Math.round((Date.now() - date) / 86400000 * 10) / 10;
+}
+
+// --------------------------------------------------------------------------
+// POSITION : on demande au téléphone, sinon Salon-de-Provence
+// --------------------------------------------------------------------------
+function obtenirPosition() {
+  return new Promise(resolve => {
+    if (!navigator.geolocation) return resolve(DEFAUT);
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({nom: "votre position", lat: p.coords.latitude, lon: p.coords.longitude}),
+      () => resolve(DEFAUT),   // refus, délai dépassé ou erreur
+      {timeout: 10000, maximumAge: 5 * 60000});
+  });
+}
+
+// --------------------------------------------------------------------------
+// DONNÉES : on demande à l'API uniquement les stations du rayon
+// --------------------------------------------------------------------------
+async function telecharger(centre) {
+  // L'API renvoie 100 stations maximum par appel : on avance par paquets.
+  const filtre = `within_distance(geom, geom'POINT(${centre.lon} ${centre.lat})', ${RAYON_KM}km)`;
+  const brutes = [];
+  for (let offset = 0; ; offset += 100) {
+    const url = API + "?" + new URLSearchParams({where: filtre, limit: 100, offset});
+    const reponse = await fetch(url);
+    if (!reponse.ok) throw new Error("L'API a répondu " + reponse.status);
+    const donnees = await reponse.json();
+    const paquet = donnees.results || [];
+    brutes.push(...paquet);
+    if (paquet.length < 100 || offset + 100 >= (donnees.total_count || 0)) return brutes;
+  }
+}
+
+function coordonnees(brut) {
+  const g = brut.geom || {};
+  if (g.lat != null && g.lon != null) return {lat: +g.lat, lon: +g.lon};
+  // Ancien format : entiers en cent-millièmes de degré
+  const lat = brut.latitude / 100000, lon = brut.longitude / 100000;
+  return isFinite(lat) && isFinite(lon) ? {lat, lon} : null;
+}
+
+// Transforme une station brute en objet simple pour la carte
+function nettoyer(brut, centre) {
+  const pos = coordonnees(brut);
+  if (!pos) return null;
+  const distance = distanceKm(centre, pos);
+  if (distance > RAYON_KM) return null;
+
+  const prix = {};
+  for (const c of Object.keys(NOMS)) {
+    const valeur = parseFloat(brut[c + "_prix"]);
+    if (!(valeur > 0.3 && valeur < 5)) continue;  // absent ou aberrant
+    prix[c] = {prix: Math.round(valeur * 1000) / 1000, age: ageEnJours(brut[c + "_maj"])};
+  }
+  if (!Object.keys(prix).length) return null;
+
+  return {
+    adresse: majuscules(brut.adresse), ville: majuscules(brut.ville), cp: brut.cp || "",
+    lat: pos.lat, lon: pos.lon, km: distance,
+    auto24: String(brut.horaires_automate_24_24 || "").toLowerCase() === "oui",
+    prix,
+  };
+}
+
+// --------------------------------------------------------------------------
+// CARTE
+// --------------------------------------------------------------------------
+const carte = L.map("carte").setView([DEFAUT.lat, DEFAUT.lon], 11);
+// Fond de carte : Plan IGN, service public en accès libre, sans clé.
+L.tileLayer("https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0" +
+  "&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&FORMAT=image/png" +
+  "&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}", {
+  maxNativeZoom: 18, maxZoom: 19,
+  attribution: "&copy; IGN-Géoplateforme"}).addTo(carte);
+const calque = L.layerGroup().addTo(carte);
+let zone = null, pointCentre = null;
+
+function placerCentre(centre) {
+  if (zone) zone.remove();
+  if (pointCentre) pointCentre.remove();
+  zone = L.circle([centre.lat, centre.lon], {radius: RAYON_KM * 1000, color: "#0b57d0",
+    weight: 1, fill: false, dashArray: "4 6", interactive: false}).addTo(carte);
+  pointCentre = L.circleMarker([centre.lat, centre.lon], {radius: 6, color: "#fff",
+    weight: 2, fillColor: "#0b57d0", fillOpacity: 1}).bindPopup(centre.nom).addTo(carte);
+  carte.invalidateSize();             // remesure la carte (taille parfois 0 au démarrage)
+  carte.fitBounds(zone.getBounds());  // cadre la carte sur le rayon
+}
+
+function infobulle(s, choisi) {
+  const lignes = Object.keys(NOMS).filter(c => s.prix[c]).map(c =>
+    `<tr><td>${c === choisi ? "<b>" + NOMS[c] + "</b>" : NOMS[c]}</td>` +
+    `<td class="n">${euro(s.prix[c].prix)}</td>` +
+    `<td><small>${quand(s.prix[c])}</small></td></tr>`).join("");
+  return `<b>${echappe(s.adresse)}</b><br>${echappe(s.cp)} ${echappe(s.ville)}` +
+    `<table>${lignes}</table>` +
+    `<small>${km(s.km)}${s.auto24 ? " · automate 24h/24" : ""}</small><br>` +
+    `<a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1` +
+    `&destination=${s.lat},${s.lon}">Itinéraire</a>`;
+}
+
+function afficher(c) {
+  carburantChoisi = c;
+  calque.clearLayers();
+  document.querySelectorAll("#choix button").forEach(b =>
+    b.setAttribute("aria-pressed", b.dataset.c === c));
+
+  const toutes = stations.filter(s => s.prix[c]);
+  const classees = toutes.filter(s => frais(s.prix[c]))
+                         .sort((a, b) => a.prix[c].prix - b.prix[c].prix);
+  const rang = new Map(classees.map((s, i) => [s, i]));
+  const marqueurs = new Map();
+
+  toutes.forEach(s => {
+    const i = rang.get(s);
+    const couleur = i === undefined ? "gris"
+      : i < classees.length / 3 ? "vert"
+      : i < classees.length * 2 / 3 ? "orange" : "rouge";
+    const m = L.marker([s.lat, s.lon], {
+      icon: L.divIcon({className: "", iconSize: [0, 0],
+        html: `<span class="etiquette ${couleur}">${euro(s.prix[c].prix)}</span>`}),
+      zIndexOffset: i === undefined ? -1000 : 1000 - i,
+    }).bindPopup(infobulle(s, c)).addTo(calque);
+    marqueurs.set(s, m);
+  });
+
+  const liste = $("liste");
+  liste.innerHTML = "";
+  if (!classees.length) {
+    $("bilan").innerHTML = `<p>Aucun prix récent pour ${NOMS[c]} dans ce rayon.</p>`;
+    return;
+  }
+  const mini = classees[0].prix[c].prix;
+  const maxi = classees[classees.length - 1].prix[c].prix;
+  const gain = ((maxi - mini) * LITRES_PLEIN).toFixed(2).replace(".", ",");
+  $("bilan").innerHTML = `<b class="vert">${euro(mini)}</b> le litre au moins cher` +
+    `<p>${gain} € d'écart sur un plein de ${LITRES_PLEIN} L entre la station la moins ` +
+    `chère et la plus chère (${classees.length} stations comparées).</p>`;
+
+  classees.slice(0, 10).forEach(s => {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="p vert">${euro(s.prix[c].prix)}</span>` +
+      `<span>${echappe(s.adresse)}</span>` +
+      `<span class="d">${echappe(s.ville)} · ${km(s.km)}</span>`;
+    b.onclick = () => { carte.setView([s.lat, s.lon], 15); marqueurs.get(s).openPopup(); };
+    li.appendChild(b);
+    liste.appendChild(li);
+  });
+}
+
+// --------------------------------------------------------------------------
+// DÉMARRAGE : position -> téléchargement -> affichage
+// --------------------------------------------------------------------------
+async function demarrer() {
+  const bouton = $("localiser");
+  bouton.disabled = true;
+  $("sous").textContent = "Recherche de votre position…";
+  $("bilan").innerHTML = "<p>Chargement…</p>";
+  $("liste").innerHTML = "";
+  $("choix").innerHTML = "";
+  calque.clearLayers();
+
+  const centre = await obtenirPosition();
+  placerCentre(centre);
+  $("sous").textContent = `${RAYON_KM} km autour de ${centre.nom} · chargement des prix…`;
+
+  try {
+    const brutes = await telecharger(centre);
+    stations = brutes.map(b => nettoyer(b, centre)).filter(Boolean);
+  } catch (erreur) {
+    $("sous").textContent = `${RAYON_KM} km autour de ${centre.nom}`;
+    $("bilan").innerHTML = "<p>Impossible de charger les prix. Vérifiez la connexion " +
+      "Internet, puis réessayez.</p><button type='button'>Réessayer</button>";
+    $("bilan").querySelector("button").onclick = demarrer;
+    bouton.disabled = false;
+    return;
+  }
+
+  $("sous").textContent = `${RAYON_KM} km autour de ${centre.nom} · ${stations.length} stations`;
+  const heure = new Date().toLocaleString("fr-FR", {dateStyle: "short", timeStyle: "short"});
+  $("pied").textContent = `Données officielles (prix-carburants.gouv.fr) chargées le ` +
+    `${heure.replace(" ", " à ")}. En gris sur la carte : prix de plus de ` +
+    `${AGE_MAX_JOURS} jours, exclus du classement.`;
+
+  const disponibles = Object.keys(NOMS).filter(c => stations.some(s => s.prix[c]));
+  disponibles.forEach(c => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = NOMS[c];
+    b.dataset.c = c;
+    b.onclick = () => afficher(c);
+    $("choix").appendChild(b);
+  });
+  if (disponibles.length) {
+    afficher(disponibles.includes(carburantChoisi) ? carburantChoisi : disponibles[0]);
+  } else {
+    $("bilan").innerHTML = "<p>Aucune station trouvée dans ce rayon.</p>";
+  }
+  bouton.disabled = false;
+}
+
+$("localiser").onclick = demarrer;
+demarrer();
+</script>
+</body>
+</html>
